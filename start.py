@@ -13,6 +13,7 @@ import pickledb
 from pymongo import MongoClient, DESCENDING
 import datetime
 import pprint
+import os
 
 
 from viberbot.api.viber_requests import ViberConversationStartedRequest
@@ -25,8 +26,6 @@ import time
 import atexit
 
 from apscheduler.schedulers.background import BackgroundScheduler
-
-scheduler = BackgroundScheduler()
 
 
 logger = logging.getLogger()
@@ -45,7 +44,8 @@ app = Flask(__name__, static_folder='web/static', template_folder='web/templates
 viber = Api(BotConfiguration(
     name='Troja',
     avatar='https://www.highmowingseeds.com/media/catalog/product/cache/image/675x675/e9c3970ab036de70892d86c6d221abfe/2/4/2419.jpg',
-
+#     auth_token='495a288507a7d239-f3b955b9ee464077-bb9738e20ec2d599'
+    auth_token='4960ac701027d0cc-f009e9bcf4dc70b4-4d5eba5b410507e0'
 ))
 
 def keep_a_live():
@@ -64,7 +64,7 @@ def report_status():
     for post in posts.find({"timestamp": {"$gt": hours_before}}).sort("timestamp", DESCENDING).limit(1):
         timestamp = str(post['timestamp'])[:-7]
         sensor_value1 = post['sensor_value1']
-        broadcast_message("Temprature on the moment: {0} is {1}°C".format(timestamp, sensor_value1))
+        broadcast_message("Temp on the moment: {0} is {1}°C".format(timestamp, sensor_value1))
 
 @app.route('/', methods=['POST'])
 def incoming():
@@ -75,13 +75,9 @@ def incoming():
     viber_request = viber.parse_request(request.get_data())
 
     if isinstance(viber_request, ViberMessageRequest):
-        # message = viber_request.message
-        # lets echo back
-        # viber.send_messages(viber_request.sender.id, [
-        #     message
-        # ])
-        report_status()
         if viber_request.sender.id in db.getall():
+            if viber_request.message.text is '?':
+                report_status()
             pass
         else:
             db.set(viber_request.sender.id, viber_request.sender.id)
@@ -154,10 +150,10 @@ def init_viber_webhook():
     viber.set_webhook('https://viber.evvide.com:443/')
     return '''<h1>Init webhook completed</h1>'''
 
-# @app.route('/.well-known/acme-challenge/<challenge>')
+@app.route('/.well-known/acme-challenge/<challenge>')
 def letsencrypt_check(challenge):
     challenge_response = {
-        challenge : "wExQShRMoO0"
+        challenge : "nihwUPsIqfELtaQl6Hnnl3LOtkyaelcqzddmTBRtShQ.NjXGDrqgWPEhvSgHLWl3aG4PokIM3C5yrGRJxU70vBc"
     }
     return Response(challenge_response[challenge], mimetype='text/plain')
 
@@ -180,13 +176,19 @@ def save_sensor(sensor_id1, sensor_value1, sensor_id2, sensor_value2, sensor_id3
     result = posts.insert_one(post_data)
     logger.info('Saved data to DB: {0}'.format(result.inserted_id))
 
-scheduler.add_job(func=keep_a_live, trigger="interval", seconds=600)
-scheduler.add_job(func=report_status, trigger="interval", seconds=1800)
+if not app.debug and os.environ.get('WERKZEUG_RUN_MAIN') == 'true':
+    scheduler = BackgroundScheduler()    
+    scheduler.add_job(func=keep_a_live, trigger="interval", seconds=600)
+    scheduler.add_job(func=report_status, trigger="interval", seconds=3600)
 
-scheduler.start()
-atexit.register(lambda: scheduler.shutdown())
+    scheduler.start()
+    atexit.register(lambda: scheduler.shutdown())
+else:
+    logger.info("Skipping scheduler init")
 
 if __name__ == "__main__":
 
-    context = ('/home/eugen/newcert/domain-crt.txt', '/home/eugen/newcert/domain-key.txt')
+    context = ('/home/eugen/newcert/domain-crt-2.txt', '/home/eugen/newcert/domain-key-2.txt')
     app.run(host='0.0.0.0', port=443, threaded=True, debug=True, ssl_context=context)
+   
+    # app.run(host='0.0.0.0', port=80, threaded=True, debug=True)

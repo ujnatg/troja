@@ -48,6 +48,11 @@ viber = Api(BotConfiguration(
     auth_token='4960ac701027d0cc-f009e9bcf4dc70b4-4d5eba5b410507e0'
 ))
 
+def build_report_for_register(register):
+    if register['value'] is None:
+        return "<font color=#777777><br>{}: {}:{}</font>".format(register['location'], register['description'],register['value'])
+    return "{}: {}:{}".format(register['location'], register['description'],register['value'])
+
 def keep_a_live():
     # get lates record date
     keep_a_live_alert = 10
@@ -58,13 +63,28 @@ def keep_a_live():
     logger.warn("Latest record not found!")
     broadcast_message("Data not received from sensors. Please check connectivity") 
 
-def report_status():
+def report_status_old():
     keep_a_live_alert = 10
     hours_before = datetime.datetime.now() - datetime.timedelta(minutes=keep_a_live_alert)
     for post in posts.find({"timestamp": {"$gt": hours_before}}).sort("timestamp", DESCENDING).limit(1):
         timestamp = str(post['timestamp'])[:-7]
         sensor_value1 = post['sensor_value1']
         broadcast_message("Temp on the moment: {0} is {1}°C".format(timestamp, sensor_value1))
+
+def report_status():
+    keep_a_live_alert = 10
+    last_result_datetime = None
+    report = "Sensors on the moment: {0}"
+    hours_before = datetime.datetime.now() - datetime.timedelta(minutes=keep_a_live_alert)
+    # Getting latest logged dataset date time
+    for post in posts.find({"timestamp": {"$gt": hours_before}}).sort("timestamp", DESCENDING).limit(1):
+        last_result_datetime = post['timestamp']
+        break
+    report = report.format(str(last_result_datetime)[:-7])
+
+    for register in posts.find({"timestamp": last_result_datetime}):
+        report += "\n" + build_report_for_register(register)
+    broadcast_message(report)
 
 @app.route('/', methods=['POST'])
 def incoming():
@@ -108,6 +128,15 @@ def broadcast_message(message_text):
             logger.error("Unable to send message to {0} id".format(subscriber))
         logger.info("Sending message completed")
     return 
+
+@app.route('/push_sensor_data2', methods=['POST'])
+def push_sensor_data2():
+    req_data = request.get_json()
+    logger.info(req_data)
+    save_sensor2(req_data)
+    return "Done"
+    #save_sensor(sensor_id1, sensor_value1, sensor_id2, sensor_value2, sensor_id3, sensor_value3, sensor_id4, sensor_value4)
+    #return '''Sensor {0}:{1} {2}:{3} {4}:{5} {6}:{7} '''.format(sensor_id1, sensor_value1, sensor_id2, sensor_value2, sensor_id3, sensor_value3, sensor_id4, sensor_value4)
 
 @app.route('/push_sensor_data', methods=['GET'])
 def push_sensor_data():
@@ -176,10 +205,18 @@ def save_sensor(sensor_id1, sensor_value1, sensor_id2, sensor_value2, sensor_id3
     result = posts.insert_one(post_data)
     logger.info('Saved data to DB: {0}'.format(result.inserted_id))
 
+def save_sensor2(sensors_data):
+    sensors_save_date = datetime.datetime.now()
+    for sensor in sensors_data:
+        sensor['timestamp'] = sensors_save_date
+        result = posts.insert_one(sensor)
+        logger.info('Saved data {1} to DB: {0}'.format(result.inserted_id, sensor))
+
+
 if not app.debug and os.environ.get('WERKZEUG_RUN_MAIN') == 'true':
     scheduler = BackgroundScheduler()    
     scheduler.add_job(func=keep_a_live, trigger="interval", seconds=600)
-    scheduler.add_job(func=report_status, trigger="interval", seconds=3600)
+    scheduler.add_job(func=report_status, trigger="interval", seconds=120)
 
     scheduler.start()
     atexit.register(lambda: scheduler.shutdown())

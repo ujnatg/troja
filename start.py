@@ -10,9 +10,10 @@ from viberbot.api.messages.text_message import TextMessage
 import logging
 import time
 import pickledb
-from pymongo import MongoClient
+from pymongo import MongoClient, DESCENDING
 import datetime
 import pprint
+import os
 
 
 from viberbot.api.viber_requests import ViberConversationStartedRequest
@@ -25,8 +26,6 @@ import time
 import atexit
 
 from apscheduler.schedulers.background import BackgroundScheduler
-
-scheduler = BackgroundScheduler()
 
 
 logger = logging.getLogger()
@@ -45,77 +44,99 @@ app = Flask(__name__, static_folder='web/static', template_folder='web/templates
 viber = Api(BotConfiguration(
     name='Troja',
     avatar='https://www.highmowingseeds.com/media/catalog/product/cache/image/675x675/e9c3970ab036de70892d86c6d221abfe/2/4/2419.jpg',
+#     auth_token='495a288507a7d239-f3b955b9ee464077-bb9738e20ec2d599'
+    auth_token='4960ac701027d0cc-f009e9bcf4dc70b4-4d5eba5b410507e0'
 ))
+
+def build_report_for_register(register):
+    if register['value'] is None:
+        return "<font color=#777777><br>{}: {}:{}</font>".format(register['location'], register['description'],register['value'])
+    return "{}: {}:{}".format(register['location'], register['description'],register['value'])
 
 def keep_a_live():
     # get lates record date
     keep_a_live_alert = 10
     time_before = datetime.datetime.now() - datetime.timedelta(minutes=keep_a_live_alert)
-    for post in posts.find({"timestamp": {"$gt": time_before}}).sort("timestamp"):
+    for post in posts.find({"timestamp": {"$gt": time_before}}).sort("timestamp", DESCENDING):
+        logger.info("Latest record found: " + str(post))
         return
-    broadcast_message("Data not updated for more than {0} minutes".format(keep_a_live_alert)) 
+    logger.warn("Latest record not found!")
+    broadcast_message("Data not received from sensors. Please check connectivity") 
+
+def report_status_old():
+    keep_a_live_alert = 10
+    hours_before = datetime.datetime.now() - datetime.timedelta(minutes=keep_a_live_alert)
+    for post in posts.find({"timestamp": {"$gt": hours_before}}).sort("timestamp", DESCENDING).limit(1):
+        timestamp = str(post['timestamp'])[:-7]
+        sensor_value1 = post['sensor_value1']
+        broadcast_message("Temp on the moment: {0} is {1}°C".format(timestamp, sensor_value1))
 
 def report_status():
     keep_a_live_alert = 10
+    last_result_datetime = None
+    report = "Sensors on the moment: {0}"
     hours_before = datetime.datetime.now() - datetime.timedelta(minutes=keep_a_live_alert)
-    for post in posts.find({"timestamp": {"$gt": hours_before}}).sort("timestamp", pymongo.DESCENDING).limit(1):
-        timestamp = str(post['timestamp'])[:-7]
-        sensor_value1 = post['sensor_value1']
+    # Getting latest logged dataset date time
+    for post in posts.find({"timestamp": {"$gt": hours_before}}).sort("timestamp", DESCENDING).limit(1):
+        last_result_datetime = post['timestamp']
+        break
+    report = report.format(str(last_result_datetime)[:-7])
 
-        broadcast_message("Temprature on date: {0} is {1} ".format(timestamp, sensor_value1))
+    for register in posts.find({"timestamp": last_result_datetime}):
+        report += "\n" + build_report_for_register(register)
+    broadcast_message(report)
 
 @app.route('/', methods=['POST'])
 def incoming():
     logger.debug("received request. post data: {0}".format(request.get_data()))
-    # every viber message is signed, you can verify the signature using this method
     if not viber.verify_signature(request.get_data(), request.headers.get('X-Viber-Content-Signature')):
         return Response(status=403)
 
-    # this library supplies a simple way to receive a request object
     viber_request = viber.parse_request(request.get_data())
 
     if isinstance(viber_request, ViberMessageRequest):
-        message = viber_request.message
-        # lets echo back
-        viber.send_messages(viber_request.sender.id, [
-            message
-        ])
         if viber_request.sender.id in db.getall():
-            viber.send_messages(viber_request.sender.id, [
-                TextMessage(text="Already subsribed - ignorin: " + viber_request.sender.id)
-            ])
+            if viber_request.message.text is '?':
+                report_status()
+            pass
         else:
             db.set(viber_request.sender.id, viber_request.sender.id)
             viber.send_messages(viber_request.sender.id, [
-                TextMessage(text="Subscribed by first message event: " + viber_request.sender.id)
+                TextMessage(text="Welcome to Trojanda")
             ])
     elif isinstance(viber_request, ViberSubscribedRequest):
         db.set(viber_request.user.id, viber_request.user.id)
         viber.send_messages(viber_request.user.id, [
-            TextMessage(text="thanks for subscribing: " + viber_request.user.id)
+            TextMessage(text="Welcome to Trojanada")
         ])
     elif isinstance(viber_request, ViberFailedRequest):
         logger.warn("client failed receiving message. failure: {0}".format(viber_request))
 
     return Response(status=200)
 
-@app.route('/send', methods=['GET'])
+# @app.route('/send', methods=['GET'])
 def broadcast_message(message_text):
     subscribers = db.getall()
     for subscriber in subscribers:
-        logger.info("Sending message to all: {0} to client {1}".format(message_text, subscriber))
+        logger.info("Sending message to: {0} to client {1}".format(message_text, subscriber))
         try:
             viber.send_messages(subscriber, [
                 TextMessage(text=message_text)
             ])
-            viber.send_messages(subscriber, [
-                URLMessage(media="https://viber.evvide.com")
-            ])
 
         except:
             logger.error("Unable to send message to {0} id".format(subscriber))
+        logger.info("Sending message completed")
+    return 
 
-    return '''Message distribution completed'''
+@app.route('/push_sensor_data2', methods=['POST'])
+def push_sensor_data2():
+    req_data = request.get_json()
+    logger.info(req_data)
+    save_sensor2(req_data)
+    return "Done"
+    #save_sensor(sensor_id1, sensor_value1, sensor_id2, sensor_value2, sensor_id3, sensor_value3, sensor_id4, sensor_value4)
+    #return '''Sensor {0}:{1} {2}:{3} {4}:{5} {6}:{7} '''.format(sensor_id1, sensor_value1, sensor_id2, sensor_value2, sensor_id3, sensor_value3, sensor_id4, sensor_value4)
 
 @app.route('/push_sensor_data', methods=['GET'])
 def push_sensor_data():
@@ -146,8 +167,10 @@ def pull_sensor_data():
         sensor_value3 = post['sensor_value3']
         sensor_id4 = post['sensor_id4']
         sensor_value4 = post['sensor_value4']
-
-        result = result + "{0},{1},{2},{3},{4}\n".format(timestamp, str(float(sensor_value1)), str(float(sensor_value2)), str(float(sensor_value3)), str(float(sensor_value4)))
+        try:
+            result = result + "{0},{1},{2},{3},{4}\n".format(timestamp, str(float(sensor_value1)), str(float(sensor_value2)), str(float(sensor_value3)), str(float(sensor_value4)))
+        except:
+            logger.error("Unable to parse data: " + str(post))
         # result = result + str(post['timestamp']) + "\n"
     return result
 
@@ -159,7 +182,7 @@ def init_viber_webhook():
 @app.route('/.well-known/acme-challenge/<challenge>')
 def letsencrypt_check(challenge):
     challenge_response = {
-        challenge : "B3UAkGnLAD2tHADsfmFTEWuwcNYQNx90n8peyrVDG70.ReTeUL4hLxeBtBqe_pbigKGaieDQ_Q8jwExQShRMoO0"
+        challenge : "nihwUPsIqfELtaQl6Hnnl3LOtkyaelcqzddmTBRtShQ.NjXGDrqgWPEhvSgHLWl3aG4PokIM3C5yrGRJxU70vBc"
     }
     return Response(challenge_response[challenge], mimetype='text/plain')
 
@@ -180,15 +203,29 @@ def save_sensor(sensor_id1, sensor_value1, sensor_id2, sensor_value2, sensor_id3
         'sensor_value4': sensor_value4
     }
     result = posts.insert_one(post_data)
-    print('One post: {0}'.format(result.inserted_id))
+    logger.info('Saved data to DB: {0}'.format(result.inserted_id))
 
-scheduler.add_job(func=keep_a_live, trigger="interval", seconds=300)
-scheduler.add_job(func=report_status, trigger="interval", seconds=3600)
+def save_sensor2(sensors_data):
+    sensors_save_date = datetime.datetime.now()
+    for sensor in sensors_data:
+        sensor['timestamp'] = sensors_save_date
+        result = posts.insert_one(sensor)
+        logger.info('Saved data {1} to DB: {0}'.format(result.inserted_id, sensor))
 
-scheduler.start()
-atexit.register(lambda: scheduler.shutdown())
+
+if not app.debug and os.environ.get('WERKZEUG_RUN_MAIN') == 'true':
+    scheduler = BackgroundScheduler()    
+    scheduler.add_job(func=keep_a_live, trigger="interval", seconds=600)
+    scheduler.add_job(func=report_status, trigger="interval", seconds=120)
+
+    scheduler.start()
+    atexit.register(lambda: scheduler.shutdown())
+else:
+    logger.info("Skipping scheduler init")
 
 if __name__ == "__main__":
 
-    context = ('/home/eugen/newcert/domain-crt.txt', '/home/eugen/newcert/domain-key.txt')
+    context = ('/home/eugen/newcert/domain-crt-2.txt', '/home/eugen/newcert/domain-key-2.txt')
     app.run(host='0.0.0.0', port=443, threaded=True, debug=True, ssl_context=context)
+   
+    # app.run(host='0.0.0.0', port=80, threaded=True, debug=True)
